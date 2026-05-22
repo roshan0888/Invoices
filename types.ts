@@ -85,3 +85,15 @@ export interface VoucherData {
   grossAmount: number;
   tdsRate: number; // e.g. 10
 }
+
+export interface PaymentRecord {
+  id: string;
+  documentNumber: string;
+  documentType: 'invoice' | 'voucher';
+  clientName: string;
+  amount: number;
+  paymentMode: string;
+  referenceNumber: string;
+  date: string;
+  status: 'success' | 'failed' | 'processing';
+}

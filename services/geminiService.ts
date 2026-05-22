@@ -85,6 +85,50 @@ const parseInvoiceItems = async (description: string): Promise<SmartFillResponse
   }
 };
 
+const testConnection = async (apiKey: string): Promise<{ success: boolean; errorDetails?: string }> => {
+  if (!apiKey || apiKey.trim() === '') {
+    return { success: false, errorDetails: "API Key is empty. Please enter a valid Gemini API key." };
+  }
+  
+  const cleanKey = apiKey.replace(/['"]+/g, '');
+
+  try {
+    const ai = new GoogleGenAI({ apiKey: cleanKey });
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash", 
+      contents: "Respond with exactly the word: 'OK'",
+    });
+
+    if (response && response.text) {
+      return { success: true };
+    }
+    return { success: false, errorDetails: "Empty response received from the model." };
+  } catch (error: any) {
+    console.error("Gemini Diagnostic Connection Failure:", error);
+    let details = "Unknown connection error.";
+    if (error instanceof Error) {
+      details = error.message;
+    } else if (typeof error === 'object' && error !== null) {
+      details = JSON.stringify(error);
+    } else if (typeof error === 'string') {
+      details = error;
+    }
+    
+    // Add extra network debugging hints based on the error content
+    if (details.toLowerCase().includes("blocked") || details.toLowerCase().includes("location") || details.toLowerCase().includes("region") || details.toLowerCase().includes("not available")) {
+      details = `Geographical Restriction: The Gemini API service might not be available in your country/region. ${details}`;
+    } else if (details.toLowerCase().includes("api key not valid") || details.toLowerCase().includes("invalid key") || details.toLowerCase().includes("api_key_invalid")) {
+      details = `Invalid Credentials: The API key provided is invalid. Please double check the key characters. ${details}`;
+    } else if (details.toLowerCase().includes("quota") || details.toLowerCase().includes("rate limit") || details.toLowerCase().includes("limit exceeded") || details.toLowerCase().includes("429")) {
+      details = `Rate Limit/Quota Block: You have exceeded the free trial limits or rate restrictions. ${details}`;
+    } else if (details.toLowerCase().includes("fetch failed") || details.toLowerCase().includes("networkerror") || details.toLowerCase().includes("failed to fetch")) {
+      details = `CORS/Network Restriction: Local browser connection was blocked by CORS policy, a proxy, or an ad-blocker. Try running inside a different region or using a VPN. ${details}`;
+    }
+    return { success: false, errorDetails: details };
+  }
+};
+
 export const geminiService = {
-  parseInvoiceItems
+  parseInvoiceItems,
+  testConnection
 };

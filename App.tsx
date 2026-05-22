@@ -4,8 +4,10 @@ import { PaymentModal } from './components/PaymentModal';
 import { Dashboard } from './components/Dashboard';
 import { PaymentVoucherPaper } from './components/PaymentVoucherPaper';
 import { VoucherDashboard } from './components/VoucherDashboard';
+import { PaymentLedgerDashboard } from './components/PaymentLedgerDashboard';
+import { EmailModal } from './components/EmailModal';
 import { geminiService } from './services/geminiService';
-import { InvoiceData, LineItem, VoucherData } from './types';
+import { InvoiceData, LineItem, VoucherData, PaymentRecord } from './types';
 import {
   Sparkles,
   Plus,
@@ -20,7 +22,11 @@ import {
   History,
   PenLine,
   FileText,
-  ReceiptText
+  ReceiptText,
+  Mail,
+  Activity,
+  CheckCircle,
+  AlertTriangle
 } from 'lucide-react';
 
 // Generator for persistent unique IDs
@@ -104,7 +110,7 @@ const INITIAL_VOUCHER_DATA: VoucherData = {
   tdsRate: 10,
 };
 
-type ViewMode = 'editor' | 'dashboard';
+type ViewMode = 'editor' | 'dashboard' | 'ledger';
 type DocumentType = 'invoice' | 'voucher';
 
 function App() {
@@ -112,13 +118,28 @@ function App() {
   const [voucherData, setVoucherData] = useState<VoucherData>(INITIAL_VOUCHER_DATA);
   const [history, setHistory] = useState<InvoiceData[]>([]);
   const [voucherHistory, setVoucherHistory] = useState<VoucherData[]>([]);
+  const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('editor');
   const [documentType, setDocumentType] = useState<DocumentType>('invoice');
 
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [smartFillText, setSmartFillText] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [activeTab, setActiveTab] = useState<'edit' | 'preview'>('edit');
+  
+  // AI Diagnostics State
+  const [diagnosticStatus, setDiagnosticStatus] = useState<{
+    testing: boolean;
+    message: string;
+    results?: {
+      step1: boolean; // API Key Syntax
+      step2: boolean; // Host Access
+      step3: boolean; // Geographical permissions / Region Check
+      rawError?: string;
+    };
+  } | null>(null);
+
   const [customApiKey, setCustomApiKey] = useState(() => {
     return typeof window !== 'undefined' ? localStorage.getItem('user_gemini_api_key') || '' : '';
   });
@@ -144,6 +165,15 @@ function App() {
       }
     }
 
+    const savedPaymentHistory = localStorage.getItem('smartinvoice_payment_history');
+    if (savedPaymentHistory) {
+      try {
+        setPaymentHistory(JSON.parse(savedPaymentHistory));
+      } catch (e) {
+        console.error("Failed to parse payment history");
+      }
+    }
+
     // Clear old invalid cached API key if present to allow the new default to take over
     const cachedKey = localStorage.getItem('user_gemini_api_key');
     if (cachedKey === 'AIzaSyCCrhSjpyr3c2dBynBewkitwZGxLAiMg18' || cachedKey === '') {
@@ -163,6 +193,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('smartinvoice_voucher_history', JSON.stringify(voucherHistory));
   }, [voucherHistory]);
+
+  useEffect(() => {
+    localStorage.setItem('smartinvoice_payment_history', JSON.stringify(paymentHistory));
+  }, [paymentHistory]);
 
   // Update document title for download filename fallback
   useEffect(() => {
@@ -383,13 +417,54 @@ function App() {
     });
   };
 
-  const handlePaymentSuccess = () => {
+  const handlePaymentSuccess = (details: { paymentMode: string; referenceNumber: string }) => {
     const updatedData = { ...data, isPaid: true };
     setData(updatedData);
     setIsPaymentModalOpen(false);
     setActiveTab('preview');
     // Auto-save on payment success
     saveToHistory(updatedData);
+
+    // Create payment ledger record
+    const newRecord: PaymentRecord = {
+      id: Math.random().toString(36).substr(2, 9),
+      documentNumber: data.invoiceNumber,
+      documentType: 'invoice',
+      clientName: data.clientName || 'Unnamed Entity',
+      amount: getTotal(),
+      paymentMode: details.paymentMode,
+      referenceNumber: details.referenceNumber,
+      date: new Date().toISOString().split('T')[0],
+      status: 'success'
+    };
+    setPaymentHistory(prev => [...prev, newRecord]);
+  };
+
+  const handleVoucherPayout = () => {
+    const ref = prompt("Enter NEFT / UPI Transaction Reference Number (Leave blank to auto-generate):");
+    if (ref === null) return; // User cancelled
+    
+    const finalRef = ref.trim() || 'REF-' + Math.floor(100000 + Math.random() * 900000);
+    const voucherAmt = voucherData.grossAmount - (voucherData.grossAmount * (voucherData.tdsRate / 100));
+
+    // Save voucher to history
+    saveVoucherToHistory(voucherData);
+
+    // Create payment ledger record for payout
+    const newRecord: PaymentRecord = {
+      id: Math.random().toString(36).substr(2, 9),
+      documentNumber: voucherData.voucherNumber,
+      documentType: 'voucher',
+      clientName: voucherData.payeeName || 'Unnamed Payee',
+      amount: voucherAmt,
+      paymentMode: voucherData.paymentMode || 'NEFT',
+      referenceNumber: finalRef,
+      date: new Date().toISOString().split('T')[0],
+      status: 'success'
+    };
+
+    setPaymentHistory(prev => [...prev, newRecord]);
+    alert(`Payout of ₹${Math.round(voucherAmt).toLocaleString('en-IN')} for ${voucherData.payeeName} has been successfully recorded in the audit ledger under Ref: ${finalRef}`);
   };
 
   const generatePDF = (docNumber: string, isVoucher: boolean = false) => {
@@ -495,6 +570,172 @@ function App() {
       });
   };
 
+  const compilePDFBase64 = async (): Promise<string | null> => {
+    const isVoucher = documentType === 'voucher';
+    const elementId = isVoucher ? 'voucher-paper' : 'invoice-paper';
+    const element = document.getElementById(elementId);
+
+    if (!element) {
+      console.error('Document element not found');
+      return null;
+    }
+
+    const A4_W = 794;
+    const A4_H = 1120;
+
+    const html2pdfOpts = {
+      margin: 0,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        letterRendering: true,
+        logging: false,
+        scrollX: 0,
+        scrollY: 0,
+        width: A4_W,
+        height: A4_H,
+        onclone: (clonedDoc: Document) => {
+          const el = clonedDoc.getElementById(elementId);
+          if (!el) return;
+
+          el.style.width = A4_W + 'px';
+          el.style.height = A4_H + 'px';
+          el.style.minHeight = A4_H + 'px';
+          el.style.maxHeight = A4_H + 'px';
+          el.style.overflow = 'hidden';
+          el.style.boxShadow = 'none';
+          el.style.margin = '0';
+          el.style.padding = '0';
+
+          // Neutralize parent templates
+          let parent = el.parentElement;
+          while (parent && parent !== clonedDoc.body) {
+            parent.style.transform = 'none';
+            parent.style.webkitTransform = 'none';
+            parent.style.overflow = 'visible';
+            parent.style.padding = '0';
+            parent.style.margin = '0';
+            parent.style.maxWidth = 'none';
+            parent.style.maxHeight = 'none';
+            parent.style.minHeight = '0';
+            parent.style.width = 'auto';
+            parent.style.height = 'auto';
+            parent.style.border = 'none';
+            parent.style.boxShadow = 'none';
+            parent = parent.parentElement;
+          }
+
+          clonedDoc.body.style.margin = '0';
+          clonedDoc.body.style.padding = '0';
+          clonedDoc.body.style.overflow = 'hidden';
+          clonedDoc.documentElement.style.margin = '0';
+          clonedDoc.documentElement.style.padding = '0';
+          clonedDoc.documentElement.style.overflow = 'hidden';
+        }
+      },
+      jsPDF: {
+        unit: 'mm',
+        format: 'a4',
+        orientation: 'portrait' as const
+      }
+    };
+
+    if (!(window as any).html2pdf) {
+      console.warn('html2pdf library not found');
+      return null;
+    }
+
+    try {
+      const pdfBase64 = await (window as any).html2pdf()
+        .set({
+          ...html2pdfOpts,
+          pagebreak: { mode: ['avoid-all'] }
+        })
+        .from(element)
+        .toPdf()
+        .get('pdf')
+        .then((pdf: any) => {
+          // Delete all pages after page 1
+          while (pdf.internal.getNumberOfPages() > 1) {
+            pdf.deletePage(pdf.internal.getNumberOfPages());
+          }
+          return pdf.output('datauristring');
+        });
+      
+      if (pdfBase64) {
+        const prefix = 'data:application/pdf;base64,';
+        if (pdfBase64.startsWith(prefix)) {
+          return pdfBase64.substring(prefix.length);
+        }
+        return pdfBase64;
+      }
+      return null;
+    } catch (err) {
+      console.error('PDF compile failed:', err);
+      return null;
+    }
+  };
+
+  const runAIDiagnostics = async () => {
+    const keyToTest = customApiKey || "AIzaSyDBH3M0o5T7nBi3gdcGLSqYaRKkydmbI-0";
+    setDiagnosticStatus({
+      testing: true,
+      message: "Initializing diagnostic checklist..."
+    });
+
+    // Step 1: Syntax Validation
+    await new Promise(r => setTimeout(r, 600));
+    const cleanKey = keyToTest.trim();
+    if (!cleanKey.startsWith("AIzaSy")) {
+      setDiagnosticStatus({
+        testing: false,
+        message: "Failed: Invalid API Key Prefix",
+        results: { step1: false, step2: false, step3: false, rawError: "The API key must start with 'AIzaSy'. Please verify your key from Google AI Studio." }
+      });
+      return;
+    }
+
+    // Step 2: Google Host Access
+    setDiagnosticStatus({
+      testing: true,
+      message: "Pinging Google GenAI endpoint (generativelanguage.googleapis.com)..."
+    });
+    await new Promise(r => setTimeout(r, 600));
+    try {
+      // Simple head fetch or dummy fetch to test resolution
+      await fetch("https://generativelanguage.googleapis.com/", { method: "HEAD", mode: "no-cors" });
+    } catch (e) {
+      setDiagnosticStatus({
+        testing: false,
+        message: "Failed: Host Unreachable",
+        results: { step1: true, step2: false, step3: false, rawError: "Could not establish connection to generativelanguage.googleapis.com. Please check your firewall, DNS, or proxy settings." }
+      });
+      return;
+    }
+
+    // Step 3: Run trial query & Geographical check
+    setDiagnosticStatus({
+      testing: true,
+      message: "Sending trial payload & evaluating regional permissions..."
+    });
+    
+    const diagResult = await geminiService.testConnection(cleanKey);
+    if (diagResult.success) {
+      setDiagnosticStatus({
+        testing: false,
+        message: "Success: AI service is fully functional and reachable!",
+        results: { step1: true, step2: true, step3: true }
+      });
+    } else {
+      setDiagnosticStatus({
+        testing: false,
+        message: "Failed: Handshake Refused",
+        results: { step1: true, step2: true, step3: false, rawError: diagResult.errorDetails }
+      });
+    }
+  };
+
   const saveVoucherToHistory = (currentData: VoucherData) => {
     setVoucherHistory(prev => {
       const existingIndex = prev.findIndex(i => i.voucherNumber === currentData.voucherNumber);
@@ -558,6 +799,51 @@ function App() {
     if (confirm('Are you sure you want to delete this voucher history?')) {
       setVoucherHistory(prev => prev.filter(i => i.voucherNumber !== voucherNumber));
     }
+  };
+
+  const handleLoadDocument = (docNumber: string, docType: 'invoice' | 'voucher') => {
+    if (docType === 'invoice') {
+      const match = history.find(i => i.invoiceNumber === docNumber);
+      if (match) {
+        setData(match);
+        setDocumentType('invoice');
+        setViewMode('editor');
+        setActiveTab('preview');
+      } else {
+        // Try searching inside active document since it may not be in history yet
+        if (data.invoiceNumber === docNumber) {
+          setDocumentType('invoice');
+          setViewMode('editor');
+          setActiveTab('preview');
+        } else {
+          alert(`Document ${docNumber} not found in history.`);
+        }
+      }
+    } else {
+      const match = voucherHistory.find(v => v.voucherNumber === docNumber);
+      if (match) {
+        setVoucherData(match);
+        setDocumentType('voucher');
+        setViewMode('editor');
+        setActiveTab('preview');
+      } else {
+        if (voucherData.voucherNumber === docNumber) {
+          setDocumentType('voucher');
+          setViewMode('editor');
+          setActiveTab('preview');
+        } else {
+          alert(`Voucher ${docNumber} not found in history.`);
+        }
+      }
+    }
+  };
+
+  const handleDeleteRecord = (id: string) => {
+    setPaymentHistory(prev => prev.filter(r => r.id !== id));
+  };
+
+  const handleClearLedger = () => {
+    setPaymentHistory([]);
   };
 
   const getItemTotal = (item: LineItem) => {
@@ -629,13 +915,39 @@ function App() {
             >
               <History size={14} /> History
             </button>
+            <button
+              onClick={() => setViewMode('ledger')}
+              className={`flex-1 py-2 text-xs font-bold rounded-md flex items-center justify-center gap-2 transition-all ${viewMode === 'ledger' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              <Activity size={14} /> Ledger
+            </button>
           </div>
         </div>
 
         {/* Sidebar Scroll Area */}
         <div className="flex-1 overflow-y-auto custom-scrollbar">
 
-          {viewMode === 'dashboard' ? (
+          {viewMode === 'ledger' ? (
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-3">
+                <div className="flex items-center gap-2 text-slate-800">
+                  <Activity size={18} className="text-indigo-600 animate-pulse" />
+                  <span className="text-xs font-bold uppercase tracking-wider">Audit Ledger Active</span>
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  You are now viewing the unified Financial Audit Ledger in the main workspace. Here you can find a comprehensive registry of all completed payments and payouts.
+                </p>
+                <div className="border-t border-slate-200 pt-3">
+                  <button
+                    onClick={() => setViewMode('editor')}
+                    className="w-full py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all"
+                  >
+                    Go Back to Editor
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : viewMode === 'dashboard' ? (
             documentType === 'invoice' ? (
               <Dashboard
                 history={history}
@@ -713,6 +1025,101 @@ function App() {
                           </button>
                         )}
                       </div>
+
+                      {/* Run Diagnostics Button */}
+                      <div className="pt-2">
+                        <button
+                          type="button"
+                          onClick={runAIDiagnostics}
+                          disabled={diagnosticStatus?.testing}
+                          className="w-full py-1.5 bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 border border-transparent rounded text-[10px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm active:scale-[0.98]"
+                        >
+                          {diagnosticStatus?.testing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Activity className="w-3 h-3" />}
+                          Run AI Diagnostics
+                        </button>
+                      </div>
+
+                      {/* Diagnostics Results Checklist */}
+                      {diagnosticStatus && (
+                        <div className="mt-3 p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5 text-[11px] animate-fadeIn">
+                          <div className="font-bold text-slate-800 flex items-center gap-1 border-b border-slate-200 pb-1.5">
+                            <Activity className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
+                            Diagnostics Log
+                          </div>
+                          
+                          <div className="space-y-2">
+                            {/* Step 1: Syntax */}
+                            <div className="flex items-start gap-2">
+                              {diagnosticStatus.testing && !diagnosticStatus.results ? (
+                                <RefreshCw className="w-3.5 h-3.5 text-indigo-500 animate-spin mt-0.5" />
+                              ) : diagnosticStatus.results?.step1 ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-emerald-500 mt-0.5" />
+                              ) : diagnosticStatus.results && !diagnosticStatus.results.step1 ? (
+                                <AlertTriangle className="w-3.5 h-3.5 text-rose-500 mt-0.5 animate-bounce" />
+                              ) : (
+                                <div className="w-3.5 h-3.5 rounded-full border border-slate-300 mt-0.5" />
+                              )}
+                              <div>
+                                <div className="font-bold text-slate-700">1. API Prefix Check</div>
+                                <div className="text-[9px] text-slate-500">Requires 'AIzaSy' google key sequence.</div>
+                              </div>
+                            </div>
+
+                            {/* Step 2: Host access */}
+                            <div className="flex items-start gap-2">
+                              {diagnosticStatus.testing && (!diagnosticStatus.results || (diagnosticStatus.results?.step1 && !diagnosticStatus.results?.step2 && !diagnosticStatus.results?.rawError)) ? (
+                                <RefreshCw className="w-3.5 h-3.5 text-indigo-500 animate-spin mt-0.5" />
+                              ) : diagnosticStatus.results?.step2 ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-emerald-500 mt-0.5" />
+                              ) : diagnosticStatus.results && !diagnosticStatus.results.step2 ? (
+                                <AlertTriangle className="w-3.5 h-3.5 text-rose-500 mt-0.5 animate-bounce" />
+                              ) : (
+                                <div className="w-3.5 h-3.5 rounded-full border border-slate-300 mt-0.5" />
+                              )}
+                              <div>
+                                <div className="font-bold text-slate-700">2. Host Availability Check</div>
+                                <div className="text-[9px] text-slate-500">Ping generativelanguage.googleapis.com.</div>
+                              </div>
+                            </div>
+
+                            {/* Step 3: Geographical & Model Test */}
+                            <div className="flex items-start gap-2">
+                              {diagnosticStatus.testing && (!diagnosticStatus.results || (diagnosticStatus.results?.step2 && !diagnosticStatus.results?.step3 && !diagnosticStatus.results?.rawError)) ? (
+                                <RefreshCw className="w-3.5 h-3.5 text-indigo-500 animate-spin mt-0.5" />
+                              ) : diagnosticStatus.results?.step3 ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-emerald-500 mt-0.5" />
+                              ) : diagnosticStatus.results && !diagnosticStatus.results.step3 ? (
+                                <AlertTriangle className="w-3.5 h-3.5 text-rose-500 mt-0.5 animate-bounce" />
+                              ) : (
+                                <div className="w-3.5 h-3.5 rounded-full border border-slate-300 mt-0.5" />
+                              )}
+                              <div>
+                                <div className="font-bold text-slate-700">3. Region & Trial Handshake</div>
+                                <div className="text-[9px] text-slate-500">Run trial content model response generation.</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Status Message */}
+                          <div className={`mt-2 p-2 rounded text-[10px] font-bold leading-relaxed ${
+                            diagnosticStatus.results?.step3 ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' :
+                            diagnosticStatus.results?.rawError ? 'bg-rose-50 text-rose-800 border border-rose-100 animate-pulse' :
+                            'bg-indigo-50 text-indigo-800 border border-indigo-100'
+                          }`}>
+                            <span className="font-black uppercase tracking-wide">Status:</span> {diagnosticStatus.message}
+                          </div>
+
+                          {/* Raw error diagnostic logs printout */}
+                          {diagnosticStatus.results?.rawError && (
+                            <div className="mt-2 space-y-1">
+                              <span className="font-bold text-slate-500 text-[9px] uppercase tracking-wider block">Raw Network Error Details:</span>
+                              <pre className="p-2 bg-slate-900 text-rose-400 rounded text-[9px] leading-relaxed font-mono whitespace-pre-wrap max-h-32 overflow-y-auto border border-slate-800 select-all">
+                                {diagnosticStatus.results.rawError}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </details>
                 </div>
@@ -922,46 +1329,102 @@ function App() {
       {/* --- Main Document Preview --- */}
       <main className={`flex-1 flex flex-col h-screen overflow-hidden ${activeTab === 'edit' ? 'hidden md:flex' : 'flex fixed inset-0 z-50 md:static'}`}>
 
-        {/* Top bar: Actions */}
-        <header className="no-print h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 md:px-10 z-20">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setActiveTab('edit')}
-              className="md:hidden p-1.5 text-slate-600 hover:bg-slate-100 rounded-md"
-            >
-              <ChevronRight className="rotate-180" size={20} />
-            </button>
-            <div className="flex items-center gap-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Document View</span>
+        {viewMode === 'ledger' ? (
+          <div className="flex-grow overflow-y-auto bg-slate-50">
+            <PaymentLedgerDashboard
+              paymentHistory={paymentHistory}
+              onLoadDocument={handleLoadDocument}
+              onDeleteRecord={handleDeleteRecord}
+              onClearLedger={handleClearLedger}
+            />
+          </div>
+        ) : (
+          <>
+            {/* Top bar: Actions */}
+            <header className="no-print h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 md:px-10 z-20 flex-shrink-0">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setActiveTab('edit')}
+                  className="md:hidden p-1.5 text-slate-600 hover:bg-slate-100 rounded-md"
+                >
+                  <ChevronRight className="rotate-180" size={20} />
+                </button>
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Document View</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 md:gap-3">
+                {/* Pay to Finalize button for unpaid invoices */}
+                {documentType === 'invoice' && !data.isPaid && (
+                  <button
+                    onClick={() => setIsPaymentModalOpen(true)}
+                    className="px-3.5 py-2 border border-slate-200 text-slate-700 bg-white rounded-lg text-xs font-bold hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                    title="Open Secure Card Payment Gateway"
+                  >
+                    <CreditCard className="w-4 h-4 text-indigo-600 animate-pulse" />
+                    <span className="hidden sm:inline">Pay to Finalize</span>
+                  </button>
+                )}
+
+                {/* Record Payout button for vouchers */}
+                {documentType === 'voucher' && (
+                  <button
+                    onClick={handleVoucherPayout}
+                    className="px-3.5 py-2 border border-slate-200 text-slate-700 bg-white rounded-lg text-xs font-bold hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                    title="Log Outward Payout Reference"
+                  >
+                    <Activity className="w-4 h-4 text-amber-600 animate-pulse" />
+                    <span className="hidden sm:inline">Record Payout</span>
+                  </button>
+                )}
+
+                {/* Send Email button */}
+                <button
+                  onClick={() => setIsEmailModalOpen(true)}
+                  className="px-3.5 py-2 border border-slate-200 text-slate-700 bg-white rounded-lg text-xs font-bold hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                  title="Compose custom message with A4 Base64 PDF attachment"
+                >
+                  <Mail className="w-4 h-4 text-indigo-500" />
+                  <span className="hidden sm:inline">Send Email</span>
+                </button>
+
+                <button
+                  onClick={handleDownload}
+                  className="px-4 md:px-5 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all flex items-center gap-2 shadow-sm active:scale-95"
+                >
+                  <Download size={16} /> <span>Download PDF</span>
+                </button>
+              </div>
+            </header>
+
+            {/* Preview Workspace */}
+            <div className="flex-grow overflow-y-auto p-6 md:p-12 lg:p-16 flex justify-center items-start print:p-0 print:overflow-visible print:block bg-slate-100">
+              <div className="scale-[0.8] md:scale-[0.9] lg:scale-100 origin-top print:transform-none shadow-[0_20px_50px_rgba(0,0,0,0.1)] border border-slate-200">
+                {documentType === 'invoice' ? <InvoicePaper data={data} /> : <PaymentVoucherPaper data={voucherData} />}
+              </div>
             </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleDownload}
-              className="px-5 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all flex items-center gap-2 shadow-sm"
-            >
-              <Download size={16} /> <span>Download PDF</span>
-            </button>
-          </div>
-        </header>
-
-        {/* Preview Workspace */}
-        <div className="flex-1 overflow-y-auto p-6 md:p-12 lg:p-16 flex justify-center items-start print:p-0 print:overflow-visible print:block bg-slate-100">
-          <div className="scale-[0.8] md:scale-[0.9] lg:scale-100 origin-top print:transform-none shadow-[0_20px_50px_rgba(0,0,0,0.1)] border border-slate-200">
-            {documentType === 'invoice' ? <InvoicePaper data={data} /> : <PaymentVoucherPaper data={voucherData} />}
-          </div>
-        </div>
+          </>
+        )}
 
       </main>
 
       {/* Payment Confirmation Modal */}
       <PaymentModal
-        amount={getTotal()}
+        amount={documentType === 'invoice' ? getTotal() : (voucherData.grossAmount - (voucherData.grossAmount * (voucherData.tdsRate / 100)))}
         isOpen={isPaymentModalOpen}
         onClose={() => setIsPaymentModalOpen(false)}
         onSuccess={handlePaymentSuccess}
+      />
+
+      {/* Email Dispatcher Modal */}
+      <EmailModal
+        isOpen={isEmailModalOpen}
+        onClose={() => setIsEmailModalOpen(false)}
+        documentNumber={documentType === 'invoice' ? data.invoiceNumber : voucherData.voucherNumber}
+        recipientEmail={documentType === 'invoice' ? data.clientEmail : ''}
+        pdfBase64Provider={compilePDFBase64}
       />
 
     </div>

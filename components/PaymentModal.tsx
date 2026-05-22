@@ -6,7 +6,7 @@ interface PaymentModalProps {
   amount: number;
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: (details: { paymentMode: string; referenceNumber: string }) => void;
 }
 
 export const PaymentModal: React.FC<PaymentModalProps> = ({ amount, isOpen, onClose, onSuccess }) => {
@@ -30,12 +30,18 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ amount, isOpen, onCl
     e.preventDefault();
     setStatus(PaymentStatus.PROCESSING);
     
+    const referenceNumber = 'TXN-' + Math.floor(100000 + Math.random() * 900000);
+    let mode = 'Credit Card';
+    if (cardNumber.startsWith('4')) mode = 'Visa Card';
+    else if (cardNumber.startsWith('5')) mode = 'Mastercard';
+    else if (cardNumber.startsWith('3')) mode = 'Amex Card';
+
     // Simulate network request
     setTimeout(() => {
       setStatus(PaymentStatus.SUCCESS);
       // Wait a bit to show success message before closing/proceeding
       setTimeout(() => {
-        onSuccess();
+        onSuccess({ paymentMode: mode, referenceNumber });
       }, 1500);
     }, 2000);
   };
