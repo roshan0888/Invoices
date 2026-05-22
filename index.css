@@ -1,0 +1,113 @@
+:root {
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --slate-50: #f8fafc;
+  --slate-100: #f1f5f9;
+  --slate-200: #e2e8f0;
+  --slate-300: #cbd5e1;
+  --slate-400: #94a3b8;
+  --slate-500: #64748b;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1e293b;
+  --slate-900: #0f172a;
+}
+
+body {
+  background-color: #f1f5f9;
+  color: var(--slate-900);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Professional Scrollbar */
+*::-webkit-scrollbar {
+  width: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--slate-300);
+  border-radius: 20px;
+}
+
+.card-professional {
+  background: white;
+  border: 1px solid var(--slate-200);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  transition: all 0.2s ease;
+}
+
+.card-professional:hover {
+  border-color: var(--slate-300);
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+.btn-professional {
+  background-color: var(--slate-900);
+  color: white;
+  font-weight: 600;
+  border-radius: 8px;
+  transition: all 0.1s ease;
+}
+
+.btn-professional:hover {
+  background-color: var(--slate-800);
+}
+
+.input-professional {
+  background-color: white;
+  border: 1px solid var(--slate-200);
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-size: 0.875rem;
+  transition: all 0.1s ease;
+}
+
+.input-professional:focus {
+  border-color: var(--primary);
+  ring: 2px solid rgba(37, 99, 235, 0.1);
+  outline: none;
+}
+
+.sidebar-professional {
+  background-color: white;
+  border-right: 1px solid var(--slate-200);
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    height: auto !important;
+    min-height: auto !important;
+  }
+
+  #invoice-paper {
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: hidden !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+  }
+}
+
+@page {
+  size: A4;
+  margin: 0;
+}
